@@ -1,0 +1,46 @@
+# Secrets and local environment configuration
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local tests and maintenance scripts
+tests/
+scripts/
+
+# Stage verification snapshot
+requirements-stage7-verified.txt
+
+# HuggingFace and model caches
+.cache/
+huggingface/
+models/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.old
+.dev-pids.txt
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

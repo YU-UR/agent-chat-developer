@@ -1,0 +1,405 @@
+x-backend-common: &backend-common
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+
+  image: agent-chat-backend:stage8
+
+  env_file:
+    - .env
+
+  environment:
+    DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+
+    LANGGRAPH_CHECKPOINT_DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+
+    ALEMBIC_DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+
+    MILVUS_URI: http://milvus:19530
+
+    MEMORY_LLM_BASE_URL: http://local-llm-server:8020/v1
+
+    SANDBOX_API_URL: http://sandbox:8010
+
+    MEMORY_SEARCH_TIMEOUT_SECONDS: "${MEMORY_SEARCH_TIMEOUT_SECONDS:-60}"
+
+    SANDBOX_HTTP_TIMEOUT_SECONDS: "${SANDBOX_HTTP_TIMEOUT_SECONDS:-20}"
+
+  restart: unless-stopped
+
+  volumes:
+    - huggingface-cache:/home/app/.cache/huggingface
+
+  networks:
+    - agent-chat-network
+
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+    redis:
+      condition: service_healthy
+
+    kafka:
+      condition: service_healthy
+
+    milvus:
+      condition: service_healthy
+
+services:
+  # -------------------------
+  # Redis
+  # -------------------------
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: agent-chat-redis
+    restart: unless-stopped
+
+    ports:
+      - "${REDIS_PORT}:6379"
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/redis:/data"
+      - "./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro"
+
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+    networks:
+      - agent-chat-network
+
+  # -------------------------
+  # Kafka
+  # -------------------------
+  kafka:
+    image: apache/kafka:4.1.0
+    container_name: agent-chat-kafka
+
+    ports:
+      - "9092:9092"
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: >-
+        INTERNAL://0.0.0.0:29092,
+        EXTERNAL://0.0.0.0:9092,
+        CONTROLLER://0.0.0.0:9093
+
+      KAFKA_ADVERTISED_LISTENERS: >-
+        INTERNAL://kafka:29092,
+        EXTERNAL://localhost:9092
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-
+        CONTROLLER:PLAINTEXT,
+        INTERNAL:PLAINTEXT,
+        EXTERNAL:PLAINTEXT
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/kafka:/var/lib/kafka/data"
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+    networks:
+      - agent-chat-network
+
+  # -------------------------
+  # PostgreSQL
+  # -------------------------
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: agent-chat-postgres
+    restart: unless-stopped
+
+    ports:
+      - "${POSTGRES_PORT}:5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/postgres:/var/lib/postgresql/data"
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+    networks:
+      - agent-chat-network
+
+  # -------------------------
+  # Milvus dependencies: etcd
+  # -------------------------
+  etcd:
+    container_name: agent-chat-milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.18
+
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+
+    command:
+      - etcd
+      - -advertise-client-urls=http://127.0.0.1:2379
+      - -listen-client-urls=http://0.0.0.0:2379
+      - --data-dir
+      - /etcd
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/milvus/etcd:/etcd"
+
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - agent-chat-network
+
+  # -------------------------
+  # Milvus dependencies: MinIO
+  # -------------------------
+  minio:
+    container_name: agent-chat-milvus-minio
+    image: milvusdb/minio:RELEASE.2024-12-18T13-15-44Z
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/milvus/minio:/minio_data"
+
+    command:
+      - minio
+      - server
+      - /minio_data
+      - --console-address
+      - ":9001"
+
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://localhost:9000/minio/health/live
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - agent-chat-network
+
+  # -------------------------
+  # Milvus
+  # -------------------------
+  milvus:
+    container_name: agent-chat-milvus
+    image: milvusdb/milvus:v2.6.25
+
+    command:
+      - milvus
+      - run
+      - standalone
+
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+
+    volumes:
+      - "${AGENT_CHAT_DATA_DIR}/milvus/data:/var/lib/milvus"
+
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9091/healthz" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+    networks:
+      - agent-chat-network
+
+  backend:
+    <<: *backend-common
+
+    container_name: agent-chat-api
+
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+    expose:
+      - "8000"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  chat-worker:
+    <<: *backend-common
+
+    container_name: agent-chat-chat-worker
+
+    command:
+      - python
+      - -m
+      - app.workers.chat_worker
+
+  memory-worker:
+    <<: *backend-common
+
+    container_name: agent-chat-memory-worker
+
+    command:
+      - python
+      - -m
+      - app.workers.memory_worker
+
+  outbox-publisher:
+    <<: *backend-common
+
+    container_name: agent-chat-outbox-publisher
+
+    command:
+      - python
+      - -m
+      - app.workers.outbox_publisher
+
+  # -----------------------------------------
+  # Local LLM Server
+  # -----------------------------------------
+  local-llm-server:
+    <<: *backend-common
+    container_name: agent-chat-local-llm-server
+
+    command:
+      - uvicorn
+      - app.llm.local_llm_server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8020"
+
+    expose:
+      - "8020"
+
+  # -----------------------------------------
+  # Sandbox API
+  # -----------------------------------------
+  sandbox:
+    <<: *backend-common
+    container_name: agent-chat-sandbox
+
+    command:
+      - uvicorn
+      - app.sandbox.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8010"
+
+    expose:
+      - "8010"
+
+    # Linux deployment: set DOCKER_GID to the Docker
+    # socket's actual group ID on the deployment host.
+    group_add:
+      - "${DOCKER_GID:-999}"
+
+    volumes:
+      - huggingface-cache:/home/app/.cache/huggingface
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # -----------------------------------------
+  # Frontend: React static build + Nginx
+  # -----------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    image: agent-chat-frontend:stage8
+    container_name: agent-chat-frontend
+    restart: unless-stopped
+
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    networks:
+      - agent-chat-network
+
+networks:
+  agent-chat-network:
+    name: agent-chat-network
+    driver: bridge
+
+volumes:
+  huggingface-cache:
