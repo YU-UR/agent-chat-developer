@@ -947,7 +947,7 @@ Created and maintained by **UNan**.
 
 ## 📜 License
 
-This project is licensed under the MIT License.
-See the [LICENSE](LICENSE) file for details.
+This project is currently provided for personal and educational use only.
 
-© 2026 UNan
+
+© 2026 UNan. All rights reserved.
