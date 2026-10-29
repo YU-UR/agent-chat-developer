@@ -2,7 +2,7 @@
 
 > 适用对象：刚接手项目、需要理解架构并进行二次开发的工程师。  
 > 当前开发环境：Windows + PowerShell + Conda `learnLLM` + Docker Desktop + Vite/React。  
-> 当前部署状态：Stage 8 的 Dockerfile、Nginx 和 Compose 配置已编写并通过部分静态配置检查；尚未完成全量镜像构建及端到端容器验收。本文中的 Docker 部署部分是操作说明，不代表已在生产环境验证通过。
+> 当前部署状态：Dockerfile、Nginx 和 Compose 配置已编写并通过部分静态配置检查；尚未完成全量镜像构建及端到端容器验收。本文中的 Docker 部署部分是操作说明，不代表已在生产环境验证通过。
 
 ---
 
